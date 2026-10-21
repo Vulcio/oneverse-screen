@@ -1,0 +1,26 @@
+# Generated build files
+build/
+.gradle/
+.idea/
+.vscode/
+**/.cxx/
+**/externalNativeBuild/
+**/captures/
+.kotlin/
+.DS_Store
+Thumbs.db
+*.xcuserstate
+Pods/
+DerivedData/
+local.properties
+*.keystore
+*.jks
+# Never check in proprietary SDK binaries
+ndi-sdk/
+*.framework/
+*.xcframework/
+*.aar
+*.so
+*.dylib
+*.dll
+

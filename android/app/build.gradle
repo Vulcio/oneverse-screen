@@ -1,0 +1,38 @@
+plugins {
+    id "com.android.application"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) localPropertiesFile.withInputStream { localProperties.load(it) }
+def ndiSdkRoot = providers.gradleProperty("ndiAndroidSdk")
+        .orElse(providers.environmentVariable("NDI_ANDROID_SDK"))
+        .getOrElse(localProperties.getProperty("ndiAndroidSdk", "C:/Program Files/NDI/NDI 6 SDK (Android)"))
+def ndiSdkDir = file(ndiSdkRoot)
+
+android {
+    namespace = "org.openndimonitor.app"
+    compileSdk 37
+    ndkVersion = "30.0.16248370"
+
+    defaultConfig {
+        applicationId "org.openndimonitor.app"
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName = "0.1.0"
+        ndk { abiFilters "arm64-v8a", "armeabi-v7a", "x86_64" }
+        externalNativeBuild {
+            cmake { arguments "-DNDI_ANDROID_SDK_ROOT=${ndiSdkDir.absolutePath}"; cppFlags "-std=c++17 -fexceptions -frtti" }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets.main.jniLibs.srcDirs = [file("${ndiSdkDir}/Lib")]
+    externalNativeBuild { cmake { path file("src/main/cpp/CMakeLists.txt"); version "4.1.2" } }
+}
+

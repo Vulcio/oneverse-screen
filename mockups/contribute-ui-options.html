@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oneverse Screen · Contribute UI concepts</title>
+<style>
+  :root{color-scheme:dark;--bg:#0b1218;--panel:#141f28;--panel2:#1b2a35;--line:#2a3c49;--text:#f4f7fa;--muted:#9aabb8;--blue:#60b5ff;--green:#55d5a2;--red:#ff545c}
+  *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% 0,#152733 0,#0b1218 65%);font:15px/1.4 Inter,Segoe UI,Roboto,Arial,sans-serif;color:var(--text)}
+  main{max-width:1480px;margin:auto;padding:44px 32px 70px}h1{font-size:32px;margin:0 0 7px}header p{color:var(--muted);margin:0 0 34px;font-size:16px}.option{margin:0 0 42px}.option-head{display:flex;align-items:baseline;gap:14px;margin:0 0 13px}.option-head b{font-size:21px}.option-head span{color:var(--muted)}
+  .device{aspect-ratio:16/9;width:100%;max-height:700px;border:1px solid #334653;border-radius:19px;background:var(--bg);box-shadow:0 18px 55px #0008;overflow:hidden;display:grid;grid-template-rows:45px 1fr;padding:22px 30px 24px;gap:13px}
+  .top{display:flex;align-items:center;font-size:12px;letter-spacing:.12em;color:var(--muted)}.brand{color:var(--blue);font-weight:750}.slash{padding:0 12px;color:#586d7a}.title{color:var(--text);font-weight:700}.help{margin-left:auto;color:#778b98;letter-spacing:0}
+  .content{min-height:0}.section{background:linear-gradient(145deg,#17242e,#111b23);border:1px solid var(--line);border-radius:15px;padding:16px 18px}.section-head{display:flex;align-items:center;gap:11px;margin-bottom:12px}.section-head h2{font-size:17px;letter-spacing:.06em;margin:0}.state{margin-left:auto;border-radius:20px;padding:5px 11px;font-size:11px;letter-spacing:.06em;background:#253440;color:var(--muted)}.state.live{color:#ffdfe0;background:#48252a}.dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 12px #ff545c;display:inline-block;margin-right:6px}.desc{color:var(--muted);font-size:12px}.preview{background:linear-gradient(135deg,#13232c,#1a2c36);border:1px solid #324550;border-radius:11px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}.preview:before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 60% 44%,#223d49aa,transparent 57%)}.empty{text-align:center;z-index:1;color:#c1d1da}.camera-icon{width:48px;height:34px;border:2px solid #8aa1af;border-radius:8px;margin:0 auto 9px;position:relative;opacity:.8}.camera-icon:after{content:"";position:absolute;right:-12px;top:7px;border:9px solid transparent;border-right:0;border-left:12px solid #8aa1af}.empty small{display:block;color:var(--muted);margin-top:3px}.pill,.select,.button,.toggle{border-radius:9px;min-height:38px;display:flex;align-items:center;justify-content:center;padding:0 13px}.select,.toggle{border:1px solid var(--line);background:#111a21;color:#dce7ec}.button{font-weight:700;letter-spacing:.035em;background:var(--blue);color:#0b1720}.button.secondary{background:#20323f;border:1px solid #395161;color:var(--text)}.button.stop{background:#382328;border:1px solid #704047;color:#ffb5b9}.row{display:flex;align-items:center;gap:10px}.toggle{justify-content:flex-start;gap:8px}.check{width:17px;height:17px;border:1px solid #6b8290;border-radius:4px;display:inline-grid;place-items:center;color:#06131b;font-size:12px}.checked .check{background:var(--blue);border-color:var(--blue)}.grow{flex:1}.muted{color:var(--muted)}.focus{outline:2px solid var(--blue);outline-offset:2px}
+  /* A: Camera-first control room */
+  .a .content{display:grid;grid-template-columns:1.55fr 1fr;grid-template-rows:1fr 1fr;gap:13px}.a .cam{grid-row:1/3;display:flex;flex-direction:column}.a .preview{flex:1;min-height:0}.a .cam-controls{display:flex;gap:10px;margin-top:12px}.a .cam-controls .select{flex:1;justify-content:space-between}.a .screen{display:flex;flex-direction:column;justify-content:center}.a .screen .row{margin-top:12px}
+  /* B: aligned two-source workspace */
+  .b .content{display:grid;grid-template-columns:1.25fr 1fr;gap:14px}.b .cam,.b .screen{display:grid;grid-template-rows:34px minmax(0,1fr) 40px 40px 46px;gap:9px;min-height:0}.b .section-head{margin:0}.b .preview,.b .screen-art{min-height:0;height:auto;border-radius:10px}.b .screen-art{background:linear-gradient(145deg,#1c303b,#13212a);display:grid;place-items:center;color:#78909e;font-size:33px;position:relative;overflow:hidden}.b .screen-art:after{content:"DEVICE DISPLAY";position:absolute;bottom:12px;font-size:10px;letter-spacing:.13em;color:#9aabb8}.b .cam-controls{display:contents}.b .cam-controls .select{justify-content:space-between;height:40px}.b .camera-info,.b .screen-info{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}.b .audio{margin:0;height:40px}.b .actions{display:flex;gap:8px}.b .actions .button{flex:1}.b .actions .button.stop{flex:0 0 44px}.b .screen-info{color:#c5d3db}.b .screen-info span:last-child{color:var(--muted)}
+  /* C: two equally weighted source cards */
+  .c .content{display:grid;grid-template-columns:1fr 1fr;gap:15px}.c .cam,.c .screen{display:flex;flex-direction:column;min-height:0}.c .preview{flex:1;min-height:100px}.c .cam-controls{display:flex;gap:8px;margin-top:10px}.c .cam-controls .select{flex:1;justify-content:space-between}.c .audio{margin-top:10px}.c .source-art{flex:1;min-height:100px;border-radius:10px;background:linear-gradient(145deg,#1d303a,#14222b);display:grid;place-items:center;color:#78909e;font-size:44px}.c .screen .row{margin-top:10px}
+  @media(max-width:800px){main{padding:22px 14px}.device{padding:13px;gap:5px}.top{height:25px}.section{padding:9px}.section-head h2{font-size:12px}.a .content,.b .content,.c .content{gap:7px}.a .cam-controls,.b .cam-controls,.c .cam-controls{gap:5px;margin-top:5px}.button,.select,.toggle{min-height:27px;padding:0 7px;font-size:10px}.desc{font-size:9px}.preview{min-height:60px}.option-head b{font-size:17px}}
+</style>
+</head>
+<body><main>
+  <header><h1>Contribute · three layout directions</h1><p>Each option keeps Camera and Screen independent, with a separate audio switch. The camera preview space stays visible even before a camera is selected.</p></header>
+
+  <section class="option"><div class="option-head"><b>Option A · Camera-first</b><span>Large preview with controls beside it; Screen gets its own compact panel.</span></div>
+    <div class="device a"><div class="top"><span class="brand">ONEVERSE</span><span class="slash">/</span><span class="title">CONTRIBUTE</span><span class="help">Choose a source to share</span></div>
+      <div class="content">
+        <section class="section cam"><div class="section-head"><h2>CAMERA</h2><span class="state">OFF</span></div><div class="preview"><div class="empty"><div class="camera-icon"></div><b>Camera preview</b><small>Choose a camera to see its live view</small></div></div><div class="cam-controls"><div class="select">Choose camera <span>⌄</span></div><div class="toggle"><span class="check"></span> Audio</div><div class="button">START</div></div></section>
+        <section class="section screen"><div class="section-head"><h2>SCREEN</h2><span class="state">OFF</span></div><div class="desc">Share your device display as an NDI source.</div><div class="row"><div class="toggle checked"><span class="check">✓</span> Audio</div><div class="grow"></div><div class="button secondary">SHARE SCREEN</div></div></section>
+        <div class="desc">Source name: Oneverse Screen</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="option"><div class="option-head"><b>Option B · Refined alignment</b><span>Matching rows keep camera and screen controls in line, with separate audio and sharing state.</span></div>
+    <div class="device b"><div class="top"><span class="brand">ONEVERSE</span><span class="slash">/</span><span class="title">CONTRIBUTE</span><span class="help">Select a source</span></div>
+      <div class="content">
+        <section class="section cam"><div class="section-head"><h2>CAMERA</h2><span class="state">OFF</span></div><div class="preview"><div class="empty"><div class="camera-icon"></div><b>Camera preview</b><small>Choose a camera to see its live view</small></div></div><div class="select">Choose a camera <span>⌄</span></div><div class="toggle audio"><span class="check"></span> Include audio</div><div class="actions"><div class="button secondary focus">SHARE CAMERA</div><div class="button stop">■</div></div></section>
+        <section class="section screen"><div class="section-head"><h2>SCREEN</h2><span class="state">OFF</span></div><div class="screen-art">▣</div><div class="screen-info"><b>Entire device screen</b><span>Android capture</span></div><div class="toggle audio"><span class="check"></span> Include audio</div><div class="actions"><div class="button secondary">SHARE SCREEN</div><div class="button stop">■</div></div></section>
+      </div>
+    </div>
+  </section>
+
+  <section class="option"><div class="option-head"><b>Option C · Two source cards</b><span>Equal, simple zones; camera preview always has a dedicated place.</span></div>
+    <div class="device c"><div class="top"><span class="brand">ONEVERSE</span><span class="slash">/</span><span class="title">CONTRIBUTE</span><span class="help">Share this device as an NDI source</span></div>
+      <div class="content">
+        <section class="section cam"><div class="section-head"><h2>CAMERA</h2><span class="state">OFF</span></div><div class="preview"><div class="empty"><div class="camera-icon"></div><b>No camera selected</b><small>Select a camera to show live preview</small></div></div><div class="cam-controls"><div class="select">Select camera <span>⌄</span></div><div class="button secondary">SHARE</div></div><div class="toggle audio"><span class="check"></span> Include audio</div></section>
+        <section class="section screen"><div class="section-head"><h2>SCREEN</h2><span class="state">OFF</span></div><div class="source-art">▣</div><div class="desc" style="margin-top:8px">Share apps and Android screen content.</div><div class="toggle audio"><span class="check checked"><span class="check">✓</span></span> Include audio</div><div class="row"><div class="grow"></div><div class="button secondary">SHARE SCREEN</div></div></section>
+      </div>
+    </div>
+  </section>
+</main></body></html>
+
+
