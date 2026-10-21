@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 #include <Processing.NDI.Lib.h>
+#include "frame_layout.h"
 
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "OpenNdiMonitor", __VA_ARGS__)
 
@@ -29,6 +30,7 @@ void destroySenderLocked() {
         NDIlib_send_destroy(sender);
         sender = nullptr;
     }
+    std::vector<uint8_t>().swap(sender_video_buffer);
 }
 }
 
@@ -79,12 +81,17 @@ Java_org_openndimonitor_app_NdiNative_findSources(JNIEnv* env, jobject, jint tim
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_openndimonitor_app_NdiNative_connect(JNIEnv* env, jobject, jstring name, jstring address) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
-    if (!initialized) return JNI_FALSE;
+    if (!initialized || !name || !address) return JNI_FALSE;
     const char* name_chars = env->GetStringUTFChars(name, nullptr);
+    if (!name_chars) return JNI_FALSE;
     const char* address_chars = env->GetStringUTFChars(address, nullptr);
+    if (!address_chars) {
+        env->ReleaseStringUTFChars(name, name_chars);
+        return JNI_FALSE;
+    }
     NDIlib_source_t source{};
     source.p_ndi_name = name_chars;
-    source.p_url_address = address_chars;
+    source.p_url_address = address_chars[0] ? address_chars : nullptr;
 
     destroyReceiverLocked();
     NDIlib_recv_create_v3_t settings{};
@@ -131,7 +138,9 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_openndimonitor_app_NdiNative_sendVideo(JNIEnv* env, jobject, jobject pixels,
         jint width, jint height, jint row_stride, jint pixel_stride) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
-    if (!sender || !pixels || width <= 0 || height <= 0 || pixel_stride < 4 || row_stride < width * pixel_stride) return JNI_FALSE;
+    if (!sender || !pixels || width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
+        static_cast<int64_t>(width) * height * 4 > 64LL * 1024 * 1024 || pixel_stride < 4 ||
+        row_stride < static_cast<int64_t>(width) * pixel_stride) return JNI_FALSE;
     const auto* source = static_cast<const uint8_t*>(env->GetDirectBufferAddress(pixels));
     const jlong capacity = env->GetDirectBufferCapacity(pixels);
     const int64_t needed = static_cast<int64_t>(height - 1) * row_stride +
@@ -169,9 +178,11 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_openndimonitor_app_NdiNative_sendYuvVideo(JNIEnv* env, jobject, jobject y_plane,
         jint y_row_stride, jint y_pixel_stride, jobject u_plane, jint u_row_stride,
         jint u_pixel_stride, jobject v_plane, jint v_row_stride, jint v_pixel_stride,
-        jint width, jint height) {
+        jint width, jint height, jint rotation) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
-    if (!sender || !y_plane || !u_plane || !v_plane || width <= 0 || height <= 0) return JNI_FALSE;
+    if (!sender || !y_plane || !u_plane || !v_plane || width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
+        static_cast<int64_t>(width) * height * 4 > 64LL * 1024 * 1024 ||
+        (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) return JNI_FALSE;
     const auto* y_data = static_cast<const uint8_t*>(env->GetDirectBufferAddress(y_plane));
     const auto* u_data = static_cast<const uint8_t*>(env->GetDirectBufferAddress(u_plane));
     const auto* v_data = static_cast<const uint8_t*>(env->GetDirectBufferAddress(v_plane));
@@ -185,33 +196,34 @@ Java_org_openndimonitor_app_NdiNative_sendYuvVideo(JNIEnv* env, jobject, jobject
         v_capacity < static_cast<jlong>((height + 1) / 2 - 1) * v_row_stride + static_cast<jlong>((width + 1) / 2 - 1) * v_pixel_stride + 1 ||
         static_cast<int64_t>(width) * height * 4 > std::numeric_limits<int>::max()) return JNI_FALSE;
 
+    const RotatedFrameLayout layout{width, height, rotation};
     sender_video_buffer.resize(static_cast<size_t>(width) * height * 4);
     for (int y = 0; y < height; ++y) {
-        uint8_t* dst = sender_video_buffer.data() + static_cast<int64_t>(y) * width * 4;
         const int chroma_y = y / 2;
         for (int x = 0; x < width; ++x) {
+            uint8_t* dst = sender_video_buffer.data() + layout.pixelIndex(x, y) * 4;
             const int luminance = std::max(0, static_cast<int>(y_data[static_cast<int64_t>(y) * y_row_stride + static_cast<int64_t>(x) * y_pixel_stride]) - 16);
             const int chroma_x = x / 2;
             const int u = static_cast<int>(u_data[static_cast<int64_t>(chroma_y) * u_row_stride + static_cast<int64_t>(chroma_x) * u_pixel_stride]) - 128;
             const int v = static_cast<int>(v_data[static_cast<int64_t>(chroma_y) * v_row_stride + static_cast<int64_t>(chroma_x) * v_pixel_stride]) - 128;
             const int c = 298 * luminance;
-            dst[x * 4] = static_cast<uint8_t>(std::clamp((c + 409 * v + 128) >> 8, 0, 255));
-            dst[x * 4 + 1] = static_cast<uint8_t>(std::clamp((c - 100 * u - 208 * v + 128) >> 8, 0, 255));
-            dst[x * 4 + 2] = static_cast<uint8_t>(std::clamp((c + 516 * u + 128) >> 8, 0, 255));
-            dst[x * 4 + 3] = 0xFF;
+            dst[0] = static_cast<uint8_t>(std::clamp((c + 409 * v + 128) >> 8, 0, 255));
+            dst[1] = static_cast<uint8_t>(std::clamp((c - 100 * u - 208 * v + 128) >> 8, 0, 255));
+            dst[2] = static_cast<uint8_t>(std::clamp((c + 516 * u + 128) >> 8, 0, 255));
+            dst[3] = 0xFF;
         }
     }
     NDIlib_video_frame_v2_t frame{};
-    frame.xres = width;
-    frame.yres = height;
+    frame.xres = layout.width();
+    frame.yres = layout.height();
     frame.FourCC = NDIlib_FourCC_video_type_RGBA;
     frame.frame_rate_N = 30;
     frame.frame_rate_D = 1;
-    frame.picture_aspect_ratio = static_cast<float>(width) / height;
+    frame.picture_aspect_ratio = static_cast<float>(layout.width()) / layout.height();
     frame.frame_format_type = NDIlib_frame_format_type_progressive;
     frame.timecode = NDIlib_send_timecode_synthesize;
     frame.p_data = sender_video_buffer.data();
-    frame.line_stride_in_bytes = width * 4;
+    frame.line_stride_in_bytes = layout.width() * 4;
     NDIlib_send_send_video_v2(sender, &frame);
     return JNI_TRUE;
 }
@@ -289,6 +301,8 @@ Java_org_openndimonitor_app_NdiNative_capture(JNIEnv* env, jobject, jobject targ
         }
     } else {
         LOGE("Unexpected NDI video pixel format: %u", static_cast<unsigned>(frame.FourCC));
+        NDIlib_recv_free_video_v2(receiver, &frame);
+        return nullptr;
     }
     const int width = frame.xres;
     const int height = frame.yres;

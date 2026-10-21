@@ -9,7 +9,6 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.net.nsd.NsdManager
 import android.net.wifi.WifiManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraCaptureSession
@@ -33,7 +32,6 @@ import android.view.Surface
 import android.view.WindowManager
 import android.view.animation.AlphaAnimation
 import android.webkit.WebChromeClient
-import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -88,10 +86,9 @@ class MainActivity : Activity() {
     private var contributeFocusTarget: View? = null
     private val cameraPreviewPoll = object : Runnable {
         override fun run() {
-            val preview = cameraPreviewView ?: return
+            val preview = cameraPreviewView
             val bitmap = ContributeService.latestCameraPreview
-            if (bitmap != null && preview.tag !== bitmap) {
-                (preview.tag as? Bitmap)?.takeIf { it !== bitmap }?.recycle()
+            if (bitmap != null && preview != null && preview.tag !== bitmap) {
                 preview.setImageBitmap(bitmap)
                 preview.tag = bitmap
                 preview.contentDescription = "Live camera preview"
@@ -102,7 +99,6 @@ class MainActivity : Activity() {
         }
     }
     private val worker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-    private lateinit var nsdManager: NsdManager
     private var multicastLock: WifiManager.MulticastLock? = null
     private var root: FrameLayout? = null
     @Volatile private var currentMode = Mode.HOME
@@ -118,6 +114,9 @@ class MainActivity : Activity() {
     private var discoveryTask: ScheduledFuture<*>? = null
     private var frameTask: ScheduledFuture<*>? = null
     private var connectionGeneration = 0
+    @Volatile private var activityStarted = false
+    @Volatile private var lifecycleGeneration = 0
+    private var captureStartPending = false
     private var hybridRequested = false
     private var hybridViewport = NdiViewport()
     private var ndiContainer: FrameLayout? = null
@@ -138,9 +137,11 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { navigateBack() }
+        }
         setKeepScreenAwake(true)
         enterImmersiveMode()
-        nsdManager = getSystemService(NSD_SERVICE) as NsdManager
         when (startupMode()) {
             "web" -> renderWeb(configuredUrl())
             "ndi" -> renderSources()
@@ -183,6 +184,9 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        activityStarted = true
+        val generation = ++lifecycleGeneration
+        webView?.onResume()
         setKeepScreenAwake(true)
         if (currentMode == Mode.CONTRIBUTE) {
             val cameraIsSending = ContributeService.isRunning && ContributeService.activeMode == ContributeService.MODE_CAMERA
@@ -192,6 +196,7 @@ class MainActivity : Activity() {
         }
         keepMulticastDiscoveryAwake()
         worker.execute {
+            if (!activityStarted || generation != lifecycleGeneration) return@execute
             ndiReady = runCatching { NdiNative.initialize() }.getOrDefault(false)
             if (ndiReady) {
                 val restoreSource = activeSource
@@ -199,14 +204,15 @@ class MainActivity : Activity() {
                 val openPreview = currentMode in setOf(Mode.NDI, Mode.HYBRID) ||
                     (currentMode == Mode.SOURCES && startupMode() in setOf("ndi", "hybrid"))
                 main.post {
+                    if (!activityStarted || generation != lifecycleGeneration) return@post
                     if (restoreSource != null && currentMode in setOf(Mode.NDI, Mode.HYBRID, Mode.SOURCES)) {
                         connect(restoreSource, openPreview, hybrid = hybridRequested || startupMode() == "hybrid")
                     }
                     else if (currentMode == Mode.SOURCES) renderSources()
                 }
                 discoveryTask?.cancel(false)
-                discoveryTask = worker.scheduleAtFixedRate({
-                    if (!ndiReady) return@scheduleAtFixedRate
+                discoveryTask = worker.scheduleWithFixedDelay({
+                    if (!ndiReady || !activityStarted || generation != lifecycleGeneration) return@scheduleWithFixedDelay
                     val found = runCatching { NdiNative.findSources(0) }.getOrDefault(emptyArray())
                     val sources = found.mapNotNull { row ->
                         if (row.size < 2 || row[0].isBlank()) null else NdiSource(row[0], row[1])
@@ -233,7 +239,7 @@ class MainActivity : Activity() {
     }
 
     private fun startFramePolling() {
-        if (frameTask != null && frameTask?.isCancelled == false) return
+        if (frameTask != null && frameTask?.isDone == false) return
         var lastConnectionCheck = 0L
         var lastReconnectAttempt = SystemClock.elapsedRealtime()
         frameTask = worker.scheduleAtFixedRate({
@@ -252,10 +258,10 @@ class MainActivity : Activity() {
                     val source = remembered?.let { saved ->
                         latestSources.firstOrNull { it.name == saved.name } ?: saved
                     }
-                    if (source != null) runCatching { NdiNative.connect(source.name, source.address) }
+                    if (source != null && runCatching { NdiNative.connect(source.name, source.address) }.getOrDefault(false)) activeSource = source
                 }
             }
-            val info = runCatching { NdiNative.capture(frameBuffer, 0) }.getOrNull() ?: return@scheduleAtFixedRate
+            var info = runCatching { NdiNative.capture(frameBuffer, 0) }.getOrNull() ?: return@scheduleAtFixedRate
             val width = info.getOrNull(0) ?: return@scheduleAtFixedRate
             val height = info.getOrNull(1) ?: return@scheduleAtFixedRate
             val needed = info.getOrNull(2) ?: return@scheduleAtFixedRate
@@ -263,9 +269,9 @@ class MainActivity : Activity() {
             if (width <= 0 || height <= 0 || width > MAX_NDI_FRAME_DIMENSION || height > MAX_NDI_FRAME_DIMENSION ||
                 needed <= 0 || needed > MAX_NDI_FRAME_BYTES || needed.toLong() < expected) return@scheduleAtFixedRate
             if (needed > frameBuffer.capacity()) {
-                frameBuffer = ByteBuffer.allocateDirect(needed)
-                val retriedInfo = runCatching { NdiNative.capture(frameBuffer, 0) }.getOrNull() ?: return@scheduleAtFixedRate
-                if (retriedInfo.getOrNull(0) != width || retriedInfo.getOrNull(1) != height || retriedInfo.getOrNull(2) != needed) return@scheduleAtFixedRate
+                frameBuffer = runCatching { ByteBuffer.allocateDirect(needed) }.getOrNull() ?: return@scheduleAtFixedRate
+                info = runCatching { NdiNative.capture(frameBuffer, 0) }.getOrNull() ?: return@scheduleAtFixedRate
+                if (info.getOrNull(0) != width || info.getOrNull(1) != height || info.getOrNull(2) != needed) return@scheduleAtFixedRate
             }
             frameBuffer.position(0)
             val fourcc = info.getOrNull(3) ?: return@scheduleAtFixedRate
@@ -405,6 +411,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(footer, LinearLayout.LayoutParams(-1, dp(30)))
         }
+        ContributeService.lastError?.let { screen.addView(label(it, 14, DISCONNECTED_RED)) }
         install(page)
         val selectedCameraId = preferences.getString("contribute_camera_id", null)
         if (cameras.any { it.id == selectedCameraId } && !cameraActive) requestCameraPreview(selectedCameraId!!)
@@ -495,10 +502,10 @@ class MainActivity : Activity() {
     }
 
     private fun requestCameraPreview(cameraId: String) {
-        if (cameraId.isBlank() || ContributeService.isRunning) return
+        if (cameraId.isBlank() || ContributeService.isRunning || !activityStarted || currentMode != Mode.CONTRIBUTE) return
         desiredPreviewCameraId = cameraId
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            if (pendingPreviewCameraId == cameraId) return
+            if (pendingPreviewCameraId != null) return
             pendingPreviewCameraId = cameraId
             cameraPreviewPlaceholder?.text = "Allow camera access to preview"
             requestPermissions(arrayOf(android.Manifest.permission.CAMERA), REQUEST_CAMERA_PREVIEW_PERMISSION)
@@ -519,14 +526,13 @@ class MainActivity : Activity() {
         (cameraPreviewView?.tag as? Bitmap)?.let { bitmap ->
             cameraPreviewView?.setImageDrawable(null)
             cameraPreviewView?.tag = null
-            bitmap.recycle()
         }
         cameraPreviewPlaceholder?.text = message
         cameraPreviewPlaceholder?.visibility = View.VISIBLE
     }
 
     private fun openCameraPreview(cameraId: String) {
-        if (desiredPreviewCameraId != cameraId || currentMode != Mode.CONTRIBUTE || ContributeService.isRunning || waitingForPreviewCameraClose) return
+        if (!activityStarted || isDestroyed || desiredPreviewCameraId != cameraId || currentMode != Mode.CONTRIBUTE || ContributeService.isRunning || waitingForPreviewCameraClose) return
         if (openingPreviewCameraId == cameraId || openedPreviewCameraId == cameraId) return
         openingPreviewCameraId = cameraId
         val manager = getSystemService(CAMERA_SERVICE) as CameraManager
@@ -549,12 +555,18 @@ class MainActivity : Activity() {
                 return@setOnImageAvailableListener
             }
             lastLocalPreviewFrameNanos = now
-            val bitmap = try { imageToPreviewBitmap(image) } finally { image.close() }
+            val bitmap = try {
+                runCatching {
+                    @Suppress("DEPRECATION")
+                    val rotation = windowManager.defaultDisplay.rotation
+                    CameraFrames.preview(image, characteristics?.let { CameraFrames.rotation(it, rotation) } ?: 0)
+                }.getOrNull()
+            } finally { image.close() }
+            if (bitmap == null) return@setOnImageAvailableListener
             main.post {
-                if (desiredPreviewCameraId == cameraId && currentMode == Mode.CONTRIBUTE) {
+                if (activityStarted && !ContributeService.isRunning && desiredPreviewCameraId == cameraId && currentMode == Mode.CONTRIBUTE) {
                     val view = cameraPreviewView
                     if (view != null) {
-                        (view.tag as? Bitmap)?.takeIf { it !== bitmap }?.recycle()
                         view.setImageBitmap(bitmap)
                         view.tag = bitmap
                         cameraPreviewPlaceholder?.visibility = View.GONE
@@ -565,7 +577,7 @@ class MainActivity : Activity() {
         try {
             manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
-                    if (desiredPreviewCameraId != cameraId || currentMode != Mode.CONTRIBUTE) {
+                    if (!activityStarted || ContributeService.isRunning || desiredPreviewCameraId != cameraId || currentMode != Mode.CONTRIBUTE) {
                         waitingForPreviewCameraClose = true
                         device.close()
                         return
@@ -649,35 +661,6 @@ class MainActivity : Activity() {
         previewConversionThread?.quitSafely()
         previewConversionThread = null
         previewConversionHandler = null
-    }
-
-    private fun imageToPreviewBitmap(image: Image): Bitmap {
-        val width = image.width
-        val height = image.height
-        val targetWidth = minOf(width, 640)
-        val targetHeight = (height.toLong() * targetWidth / width).toInt().coerceAtLeast(1)
-        val pixels = IntArray(targetWidth * targetHeight)
-        val (yPlane, uPlane, vPlane) = image.planes
-        val yBuffer = yPlane.buffer.duplicate()
-        val uBuffer = uPlane.buffer.duplicate()
-        val vBuffer = vPlane.buffer.duplicate()
-        for (py in 0 until targetHeight) {
-            val sy = py * height / targetHeight
-            for (px in 0 until targetWidth) {
-                val sx = px * width / targetWidth
-                val y = (yBuffer.get(sy * yPlane.rowStride + sx * yPlane.pixelStride).toInt() and 0xFF) - 16
-                val uvx = sx / 2
-                val uvy = sy / 2
-                val u = (uBuffer.get(uvy * uPlane.rowStride + uvx * uPlane.pixelStride).toInt() and 0xFF) - 128
-                val v = (vBuffer.get(uvy * vPlane.rowStride + uvx * vPlane.pixelStride).toInt() and 0xFF) - 128
-                val luminance = maxOf(0, y) * 1192
-                val red = (luminance + 1634 * v).coerceIn(0, 262143) shr 10
-                val green = (luminance - 833 * v - 400 * u).coerceIn(0, 262143) shr 10
-                val blue = (luminance + 2066 * u).coerceIn(0, 262143) shr 10
-                pixels[py * targetWidth + px] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
-            }
-        }
-        return Bitmap.createBitmap(pixels, targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
     }
 
     private fun screenShareCard(sourceName: EditText): LinearLayout {
@@ -846,8 +829,10 @@ class MainActivity : Activity() {
     }
 
     private fun startContributeService(mode: String, projectionResultCode: Int? = null, projectionData: Intent? = null) {
+        if (captureStartPending || ContributeService.isRunning || !activityStarted) return
+        captureStartPending = true
+        closeCameraPreview(clearDesired = true)
         if (mode == ContributeService.MODE_CAMERA) {
-            closeCameraPreview(clearDesired = true)
             ContributeService.cameraPreviewRequested = true
             cameraPreviewView?.visibility = View.VISIBLE
             cameraPreviewPlaceholder?.text = "Starting camera share…"
@@ -864,8 +849,17 @@ class MainActivity : Activity() {
             intent.putExtra(ContributeService.EXTRA_PROJECTION_DATA, projectionData)
         }
         val launchService = Runnable {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-            main.postDelayed({ if (currentMode == Mode.CONTRIBUTE) renderContribute() }, 700)
+            if (!activityStarted || isFinishing || isDestroyed) {
+                captureStartPending = false
+                return@Runnable
+            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+            }.onFailure { showToastMessage("Could not start sharing: ${it.message}") }
+            main.postDelayed({
+                captureStartPending = false
+                if (activityStarted && currentMode == Mode.CONTRIBUTE) renderContribute()
+            }, 700)
         }
         if (mode == ContributeService.MODE_CAMERA) main.postDelayed(launchService, 250) else launchService.run()
     }
@@ -889,7 +883,7 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_CAMERA_PREVIEW_PERMISSION) {
             val cameraId = pendingPreviewCameraId.also { pendingPreviewCameraId = null } ?: return
             if (grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestCameraPreview(cameraId)
+                if (currentMode == Mode.CONTRIBUTE) desiredPreviewCameraId?.let { requestCameraPreview(it) }
             } else {
                 cameraPreviewPlaceholder?.text = "Camera permission is needed for preview"
             }
@@ -908,7 +902,7 @@ class MainActivity : Activity() {
         val prefs = getPreferences(MODE_PRIVATE)
         val custom = prefs.getString("custom_url", null)
             ?: prefs.getString("startup_url", null)?.takeUnless { it == DEFAULT_WEB_URL || it == LEGACY_DEFAULT_WEB_URL }
-        return custom ?: DEFAULT_WEB_URL
+        return custom?.let(::normalizeUrl) ?: DEFAULT_WEB_URL
     }
 
     private fun configuredContributeSourceName(): String = getPreferences(MODE_PRIVATE)
@@ -935,7 +929,7 @@ class MainActivity : Activity() {
     private fun lastSource(): NdiSource? {
         val prefs = getPreferences(MODE_PRIVATE)
         val name = prefs.getString("last_ndi_source_name", null)?.takeIf { it.isNotBlank() } ?: return null
-        val address = prefs.getString("last_ndi_source_address", null)?.takeIf { it.isNotBlank() } ?: return null
+        val address = prefs.getString("last_ndi_source_address", null) ?: return null
         return NdiSource(name, address)
     }
 
@@ -946,12 +940,6 @@ class MainActivity : Activity() {
         .orEmpty()
         .trim()
 
-    private fun setSourceAlias(source: NdiSource, alias: String) {
-        val editor = getPreferences(MODE_PRIVATE).edit()
-        if (alias.isBlank()) editor.remove(sourceAliasKey(source))
-        else editor.putString(sourceAliasKey(source), alias.trim())
-        editor.apply()
-    }
     private fun configuredPreviewFrameRate(): Int {
         val prefs = getPreferences(MODE_PRIVATE)
         val savedRate = prefs.getInt("ndi_preview_fps", 0)
@@ -970,31 +958,35 @@ class MainActivity : Activity() {
         return reported?.takeIf { it.isFinite() && it > 0f }?.roundToInt()?.coerceIn(15, 120) ?: 60
     }
 
-    private fun normalizeUrl(input: String): String? {
-        val raw = input.trim()
-        if (raw.isEmpty()) return null
-        val url = if (raw.contains("://")) raw else "https://$raw"
-        val separator = url.indexOf("://")
-        if (separator <= 0) return null
-        val normalized = url.substring(0, separator).lowercase() + url.substring(separator)
-        val parsed = runCatching { android.net.Uri.parse(normalized) }.getOrNull() ?: return null
-        return normalized.takeIf { parsed.scheme in setOf("http", "https") && !parsed.host.isNullOrBlank() }
-    }
+    private fun normalizeUrl(input: String): String? = MonitorPolicy.normalizeUrl(input)
 
-    private fun webOrigin(input: String): String? {
-        val uri = runCatching { android.net.Uri.parse(input) }.getOrNull() ?: return null
-        val scheme = uri.scheme?.lowercase() ?: return null
-        val host = uri.host?.lowercase() ?: return null
-        if (scheme !in setOf("http", "https")) return null
-        val port = uri.port.takeIf { it >= 0 } ?: if (scheme == "https") 443 else 80
-        return "$scheme://$host:$port"
-    }
+    private fun webOrigin(input: String): String? = MonitorPolicy.origin(input)
 
     private fun renderSettings() {
         stopNdiPlaybackIfActive()
         currentMode = Mode.SETTINGS
         val screen = baseScreen("SETTINGS", "Startup destination")
         val options = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sourceLabelFields = linkedMapOf<NdiSource, EditText>()
+        fun saveSourceLabels(): Boolean {
+            val assigned = mutableSetOf<String>()
+            for ((_, field) in sourceLabelFields) {
+                val value = field.text.toString().trim()
+                field.error = null
+                if (value.isNotEmpty() && !assigned.add(value.lowercase(java.util.Locale.ROOT))) {
+                    field.error = "Each source label must be unique"
+                    field.requestFocus()
+                    return false
+                }
+            }
+            val editor = getPreferences(MODE_PRIVATE).edit()
+            for ((source, field) in sourceLabelFields) {
+                val value = field.text.toString().trim()
+                if (value.isEmpty()) editor.remove(sourceAliasKey(source)) else editor.putString(sourceAliasKey(source), value)
+            }
+            editor.apply()
+            return true
+        }
         val scroll = ScrollView(this).apply {
             isFillViewport = false
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -1064,7 +1056,7 @@ class MainActivity : Activity() {
             }
             setOnClickListener {
                 field.setText("")
-                getPreferences(MODE_PRIVATE).edit().remove("custom_url").apply()
+                getPreferences(MODE_PRIVATE).edit().remove("custom_url").remove("startup_url").apply()
                 field.error = null
                 urlStatus.text = "Custom URL cleared. The default Oneverse page will be used."
                 urlStatus.setTextColor(GREEN)
@@ -1208,6 +1200,7 @@ class MainActivity : Activity() {
                         setPadding(dp(14), dp(10), dp(14), dp(10))
                         background = rounded(PANEL, dp(10))
                     }
+                    sourceLabelFields[source] = aliasField
                     val sourceRow = LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.VERTICAL
                         setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -1219,17 +1212,7 @@ class MainActivity : Activity() {
                     aliasRow.addView(aliasField, LinearLayout.LayoutParams(0, dp(48), 1f))
                     aliasRow.addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(8), 1))
                     aliasRow.addView(actionButton("SAVE") {
-                        val alias = aliasField.text.toString().trim()
-                        val duplicate = alias.isNotEmpty() && latestSources.any { other ->
-                            other != source && sourceAlias(other).equals(alias, ignoreCase = true)
-                        }
-                        if (duplicate) {
-                            aliasField.error = "Each source label must be unique"
-                        } else {
-                            setSourceAlias(source, alias)
-                            aliasField.error = null
-                            showToastMessage(if (alias.isEmpty()) "Source label cleared" else "Source label saved")
-                        }
+                        if (saveSourceLabels()) showToastMessage("Source labels saved")
                     }, LinearLayout.LayoutParams(dp(84), dp(48)))
                     sourceRow.addView(aliasRow)
                     aliasList.addView(sourceRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
@@ -1258,6 +1241,7 @@ class MainActivity : Activity() {
             if (rawUrl.isNotEmpty() && normalized == null) {
                 field.error = "Enter a valid HTTP or HTTPS address"
             } else {
+                if (!saveSourceLabels()) return@actionButton
                 val editor = getPreferences(MODE_PRIVATE).edit()
                     .putString("startup_mode", when (startupMode.selectedItemPosition) { 1 -> "web"; 2 -> "ndi"; 3 -> "hybrid"; else -> "dashboard" })
                     .putBoolean("show_source_name", showSourceName.isChecked)
@@ -1286,7 +1270,7 @@ class MainActivity : Activity() {
                 urlStatus.text = "Enter a valid HTTP or HTTPS address before opening the page."
                 urlStatus.setTextColor(DISCONNECTED_RED)
             } else {
-                if (rawUrl.isEmpty()) getPreferences(MODE_PRIVATE).edit().remove("custom_url").apply()
+                if (rawUrl.isEmpty()) getPreferences(MODE_PRIVATE).edit().remove("custom_url").remove("startup_url").apply()
                 else saveCustomUrl(rawUrl, urlStatus)
                 getPreferences(MODE_PRIVATE).edit().putInt("web_zoom", webZoomValues.getOrElse(webZoom.selectedItemPosition) { 100 }).apply()
                 renderWeb(url)
@@ -1320,14 +1304,14 @@ class MainActivity : Activity() {
         val history = recentWebUrls().filterNot { it == url }.joinToString("\n")
         val preferences = getPreferences(MODE_PRIVATE)
         val editor = preferences.edit().putString("custom_url_history", history)
-        if (preferences.getString("custom_url", null) == url) editor.remove("custom_url")
+        if (configuredUrl() == url) editor.remove("custom_url").remove("startup_url")
         editor.apply()
     }
 
     private fun saveCustomUrl(input: String, status: TextView): Boolean {
         val raw = input.trim()
         if (raw.isEmpty()) {
-            getPreferences(MODE_PRIVATE).edit().remove("custom_url").apply()
+            getPreferences(MODE_PRIVATE).edit().remove("custom_url").remove("startup_url").apply()
             urlEntry?.error = null
             status.text = "Custom URL cleared. The default Oneverse page will be used."
             status.setTextColor(GREEN)
@@ -1340,7 +1324,7 @@ class MainActivity : Activity() {
             status.setTextColor(DISCONNECTED_RED)
             return false
         }
-        getPreferences(MODE_PRIVATE).edit().putString("custom_url", normalized).apply()
+        getPreferences(MODE_PRIVATE).edit().putString("custom_url", normalized).remove("startup_url").apply()
         rememberWebUrl(normalized)
         urlEntry?.error = null
         status.text = "URL saved. Press SAVE SETTINGS to apply the startup destination."
@@ -1443,8 +1427,8 @@ class MainActivity : Activity() {
         }
         val rememberedSource = lastSource()
         latestSources.forEach { source ->
-            val wasLastActive = rememberedSource?.name == source.name
-            val isCurrentlyActive = sourceConnected && activeSource?.name == source.name
+            val wasLastActive = rememberedSource == source
+            val isCurrentlyActive = sourceConnected && activeSource == source
             val state = when {
                 isCurrentlyActive -> "ACTIVE"
                 wasLastActive -> "PREVIOUS"
@@ -1505,6 +1489,7 @@ class MainActivity : Activity() {
     }
 
     private fun connect(source: NdiSource, openPreview: Boolean = true, hybrid: Boolean = hybridRequested) {
+        if (!activityStarted || worker.isShutdown) return
         val requestGeneration = ++connectionGeneration
         getPreferences(MODE_PRIVATE).edit()
             .putString("last_ndi_source_name", source.name)
@@ -1519,6 +1504,7 @@ class MainActivity : Activity() {
                     sourceConnected = false
                     if (openPreview && hybrid && currentMode == Mode.HYBRID && videoView != null) {
                         ndiSourceTitle?.text = "NDI  •  ${source.name}"
+                        startFramePolling()
                     } else if (openPreview) renderNdi(source, hybrid)
                     else {
                         if (currentMode == Mode.SOURCES) renderSources()
@@ -1570,28 +1556,38 @@ class MainActivity : Activity() {
                         return trustedOrigin == null || webOrigin(request.url.toString()) != trustedOrigin
                     }
 
-                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                        if (view == null || url == null) return
-                        if (webOrigin(url) == trustedOrigin) {
-                            val bridge = HybridPageBridge()
-                            view.addJavascriptInterface(bridge, "OneverseHybrid")
-                            view.addJavascriptInterface(bridge, "SongverseHybrid") // Backward compatibility for existing pages.
-                        } else {
-                            view.removeJavascriptInterface("OneverseHybrid")
-                            view.removeJavascriptInterface("SongverseHybrid")
-                        }
+                    @Suppress("DEPRECATION")
+                    override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
+                        url == null || trustedOrigin == null || webOrigin(url) != trustedOrigin
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        if (view != null && view === webView && currentMode == Mode.HYBRID && url != null && webOrigin(url) == trustedOrigin) HybridWebControls.inject(view)
                     }
                 }
                 if (trustedOrigin != null) {
-                    val bridge = HybridPageBridge()
-                    addJavascriptInterface(bridge, "OneverseHybrid")
-                    addJavascriptInterface(bridge, "SongverseHybrid") // Backward compatibility for existing pages.
+                    val controls = HybridPageBridge()
+                    val attached = HybridWebControls.attach(this, trustedOrigin,
+                        isActive = { activityStarted && currentMode == Mode.HYBRID && webView === this },
+                        command = { method, args ->
+                            when (method) {
+                                "getAvailableNdiSources" -> controls.getAvailableNdiSources()
+                                "setNdiViewport" -> controls.setNdiViewport(args.optDouble(0), args.optDouble(1), args.optDouble(2), args.optDouble(3))
+                                "resetNdiViewport" -> controls.resetNdiViewport()
+                                "selectNdiSource" -> controls.selectNdiSource(args.getString(0), args.getString(1))
+                                "selectNdiSourceByLabel" -> controls.selectNdiSourceByLabel(args.getString(0))
+                                else -> false
+                            }
+                        })
+                    if (!attached) showToastMessage("Update Android System WebView to enable Hybrid page controls")
                 }
                 loadUrl(hybridUrl)
             }
             webView = browser
             container.addView(browser, FrameLayout.LayoutParams(-1, -1))
             ndiContainer = container
+            container.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyNdiViewport()
+            }
         }
         val title = TextView(this).apply {
             text = "NDI  •  ${source.name}"
@@ -1622,7 +1618,7 @@ class MainActivity : Activity() {
         val display = videoView ?: return
         val viewport = hybridViewport
         parent.post {
-            if (currentMode != Mode.HYBRID || parent.width <= 0 || parent.height <= 0) return@post
+            if (currentMode != Mode.HYBRID || ndiContainer !== parent || videoView !== display || parent.width <= 0 || parent.height <= 0) return@post
             val left = (parent.width * viewport.x / 100.0).roundToInt().coerceIn(0, parent.width - 1)
             val top = (parent.height * viewport.y / 100.0).roundToInt().coerceIn(0, parent.height - 1)
             val width = (parent.width * viewport.width / 100.0).roundToInt().coerceAtLeast(1).coerceAtMost(parent.width - left)
@@ -1636,7 +1632,6 @@ class MainActivity : Activity() {
     }
 
     private inner class HybridPageBridge {
-        @JavascriptInterface
         fun getAvailableNdiSources(): String {
             val result = org.json.JSONArray()
             latestSources.forEach { source ->
@@ -1648,62 +1643,32 @@ class MainActivity : Activity() {
             return result.toString()
         }
 
-        @JavascriptInterface
         fun setNdiViewport(x: Double, y: Double, width: Double, height: Double): Boolean {
-            if (currentMode != Mode.HYBRID || !x.isFinite() || !y.isFinite() || !width.isFinite() || !height.isFinite() ||
-                x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0 || x + width > 100.0 || y + height > 100.0) return false
-            val requested = NdiViewport(x, y, width, height)
-            main.post {
-                if (currentMode == Mode.HYBRID) {
-                    hybridViewport = requested
-                    applyNdiViewport()
-                }
-            }
+            if (currentMode != Mode.HYBRID || !MonitorPolicy.validViewport(x, y, width, height)) return false
+            hybridViewport = NdiViewport(x, y, width, height)
+            applyNdiViewport()
             return true
         }
 
-        @JavascriptInterface
         fun resetNdiViewport(): Boolean {
             if (currentMode != Mode.HYBRID) return false
-            main.post {
-                if (currentMode == Mode.HYBRID) {
-                    hybridViewport = NdiViewport()
-                    applyNdiViewport()
-                }
-            }
+            hybridViewport = NdiViewport()
+            applyNdiViewport()
             return true
         }
 
-        @JavascriptInterface
         fun selectNdiSource(name: String?, address: String?): Boolean {
-            val sourceName = name?.takeIf { it.isNotBlank() } ?: return false
-            val sourceAddress = address ?: return false
-            if (currentMode != Mode.HYBRID) return false
-            val source = latestSources.firstOrNull { it.name == sourceName && it.address == sourceAddress } ?: return false
-            main.post {
-                if (currentMode == Mode.HYBRID) {
-                    val stillAvailable = latestSources.firstOrNull { it.name == source.name && it.address == source.address }
-                    if (stillAvailable != null) connect(stillAvailable, hybrid = true)
-                }
-            }
+            if (currentMode != Mode.HYBRID || name.isNullOrBlank() || address == null) return false
+            val source = latestSources.filter { it.name == name && it.address == address }.singleOrNull() ?: return false
+            connect(source, hybrid = true)
             return true
         }
 
-        @JavascriptInterface
         fun selectNdiSourceByLabel(label: String?): Boolean {
-            val requestedLabel = label?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+            val requested = label?.trim()?.takeIf { it.isNotEmpty() } ?: return false
             if (currentMode != Mode.HYBRID) return false
-            val matches = latestSources.filter { sourceAlias(it).equals(requestedLabel, ignoreCase = true) }
-            if (matches.size != 1) return false
-            val source = matches.single()
-            main.post {
-                if (currentMode == Mode.HYBRID) {
-                    val stillAvailable = latestSources.firstOrNull { it.name == source.name && it.address == source.address }
-                    if (stillAvailable != null && sourceAlias(stillAvailable).equals(requestedLabel, ignoreCase = true)) {
-                        connect(stillAvailable, hybrid = true)
-                    }
-                }
-            }
+            val source = latestSources.filter { sourceAlias(it).equals(requested, ignoreCase = true) }.singleOrNull() ?: return false
+            connect(source, hybrid = true)
             return true
         }
     }
@@ -1725,8 +1690,36 @@ class MainActivity : Activity() {
             ContributeService.cameraPreviewRequested = false
             closeCameraPreview(clearDesired = true)
         }
+        val previousRoot = root
+        webView = findWebView(view)
+        if (currentMode != Mode.SETTINGS) urlEntry = null
+        if (currentMode !in setOf(Mode.NDI, Mode.HYBRID, Mode.SOURCES)) {
+            videoView = null
+            ndiContainer = null
+            ndiSourceTitle = null
+        }
         root = FrameLayout(this).apply { setBackgroundColor(BG); addView(view, FrameLayout.LayoutParams(-1, -1)) }
         setContentView(root)
+        previousRoot?.let { releaseWebViews(it) }
+    }
+
+    private fun findWebView(view: View): WebView? {
+        if (view is WebView) return view
+        if (view is android.view.ViewGroup) {
+            for (index in 0 until view.childCount) findWebView(view.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
+    private fun releaseWebViews(view: View) {
+        if (view is WebView) {
+            (view.parent as? android.view.ViewGroup)?.removeView(view)
+            view.stopLoading()
+            view.onPause()
+            view.destroy()
+        } else if (view is android.view.ViewGroup) {
+            (0 until view.childCount).map { view.getChildAt(it) }.forEach { releaseWebViews(it) }
+        }
     }
 
     private fun actionCard(title: String, detail: String, mark: String, accent: Int, action: () -> Unit): LinearLayout {
@@ -1781,16 +1774,22 @@ class MainActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            when (currentMode) {
-                Mode.HOME -> return true
-                Mode.SETTINGS, Mode.SOURCES, Mode.CONTRIBUTE -> renderHome()
-                Mode.WEB -> { webView?.stopLoading(); renderHome() }
-                Mode.NDI, Mode.HYBRID -> renderSources()
-            }
+            navigateBack()
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
+
+    private fun navigateBack() {
+        when (currentMode) {
+            Mode.HOME -> Unit
+            Mode.SETTINGS, Mode.SOURCES, Mode.CONTRIBUTE, Mode.WEB -> renderHome()
+            Mode.NDI, Mode.HYBRID -> renderSources()
+        }
+    }
+
+    @Deprecated("Legacy Android back navigation")
+    override fun onBackPressed() { navigateBack() }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_MENU && currentMode in setOf(Mode.WEB, Mode.NDI, Mode.HYBRID)) {
@@ -1802,20 +1801,23 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
+        activityStarted = false
+        lifecycleGeneration++
+        connectionGeneration++
         setKeepScreenAwake(false)
         ContributeService.cameraPreviewRequested = false
         main.removeCallbacks(cameraPreviewPoll)
         closeCameraPreview(clearDesired = false)
-        runCatching { webView?.stopLoading() }
+        webView?.onPause()
         worker.execute {
             discoveryTask?.cancel(false)
             discoveryTask = null
             frameTask?.cancel(false)
             frameTask = null
-            if (ndiReady && !ContributeService.isRunning) {
-                runCatching { NdiNative.shutdown() }
-                ndiReady = false
-            }
+            // NDI is process-wide and may still be used by ContributeService.
+            // Release only this Activity's receiver, never the active sender.
+            if (ndiReady) runCatching { NdiNative.disconnect() }
+            ndiReady = false
         }
         multicastLock?.let { if (it.isHeld) it.release() }
         multicastLock = null
@@ -1824,10 +1826,12 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         ContributeService.cameraPreviewRequested = false
         main.removeCallbacks(cameraPreviewPoll)
-        worker.shutdownNow()
+        worker.shutdown() // Let the queued receiver cleanup complete.
         closeCameraPreview(clearDesired = true)
-        (cameraPreviewView?.tag as? Bitmap)?.recycle()
-        webView?.destroy()
+        main.removeCallbacksAndMessages(null)
+        root?.let { releaseWebViews(it) }
+        root = null
+        webView = null
         super.onDestroy()
     }
 }
@@ -1852,7 +1856,7 @@ internal object NdiNative {
         y: ByteBuffer, yRowStride: Int, yPixelStride: Int,
         u: ByteBuffer, uRowStride: Int, uPixelStride: Int,
         v: ByteBuffer, vRowStride: Int, vPixelStride: Int,
-        width: Int, height: Int
+        width: Int, height: Int, rotation: Int
     ): Boolean
     external fun sendAudio(samples: ByteBuffer, sampleRate: Int, channels: Int, sampleCount: Int): Boolean
     external fun stopSender()
@@ -1863,6 +1867,9 @@ internal object NdiNative {
 
 private class NdiVideoView(context: android.content.Context, private val showSourceDetails: Boolean) : View(context) {
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val videoBounds = RectF()
+    private val diagnosticBounds = RectF()
+    private val disconnectedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = DISCONNECTED_RED }
     private val diagnosticBackground = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE6101820.toInt() }
     private val diagnosticText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = WHITE
@@ -1890,13 +1897,11 @@ private class NdiVideoView(context: android.content.Context, private val showSou
             requiredBytes > source.capacity() || requiredBytes > MAX_NDI_FRAME_BYTES) return
         synchronized(frameLock) {
             if (frame?.width != width || frame?.height != height) {
-                frame?.recycle()
-                frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                frame = runCatching { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }.getOrNull() ?: return
             }
             val pixels = source.duplicate()
             pixels.position(0)
             runCatching { frame?.copyPixelsFromBuffer(pixels) }.onFailure {
-                frame?.recycle()
                 frame = null
                 return
             }
@@ -1925,8 +1930,8 @@ private class NdiVideoView(context: android.content.Context, private val showSou
                 val scale = minOf(width.toFloat() / current.width, height.toFloat() / current.height)
                 val w = current.width * scale
                 val h = current.height * scale
-                val dest = RectF((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
-                canvas.drawBitmap(current, null, dest, paint)
+                videoBounds.set((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
+                canvas.drawBitmap(current, null, videoBounds, paint)
             }
             if (isDisconnected) drawDisconnectedIndicator(canvas)
             if (showSourceDetails && current != null) {
@@ -1940,8 +1945,8 @@ private class NdiVideoView(context: android.content.Context, private val showSou
                 val boxHeight = lineHeight * 2 + padding * 2
                 val left = 20f * density
                 val top = height - boxHeight - 20f * density
-                val box = RectF(left, top, left + boxWidth, top + boxHeight)
-                canvas.drawRoundRect(box, 10f * density, 10f * density, diagnosticBackground)
+                diagnosticBounds.set(left, top, left + boxWidth, top + boxHeight)
+                canvas.drawRoundRect(diagnosticBounds, 10f * density, 10f * density, diagnosticBackground)
                 canvas.drawText(firstLine, left + padding, top + padding + lineHeight, diagnosticText)
                 canvas.drawText(secondLine, left + padding, top + padding + lineHeight * 2, diagnosticText)
             }
@@ -1952,8 +1957,7 @@ private class NdiVideoView(context: android.content.Context, private val showSou
         val density = resources.displayMetrics.density
         val radius = 5f * density
         val margin = 18f * density
-        val indicatorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = DISCONNECTED_RED }
-        canvas.drawCircle(width - margin - radius, margin + radius, radius, indicatorPaint)
+        canvas.drawCircle(width - margin - radius, margin + radius, radius, disconnectedPaint)
     }
 }
 

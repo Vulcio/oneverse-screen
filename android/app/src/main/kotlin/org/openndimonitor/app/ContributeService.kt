@@ -38,7 +38,6 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ContributeService : Service() {
-    private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -47,9 +46,10 @@ class ContributeService : Service() {
     private var cameraSession: CameraCaptureSession? = null
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     private val stopping = AtomicBoolean(false)
     private val startClaimed = AtomicBoolean(false)
-    private val senderStartupLock = Any()
+    private var senderStarted = false
     private val senderLock = Any()
     private var lastVideoFrameNanos = 0L
     private var lastPreviewFrameNanos = 0L
@@ -72,6 +72,11 @@ class ContributeService : Service() {
         @Volatile var cameraPreviewRequested = false
         @Volatile var latestCameraPreview: Bitmap? = null
             private set
+        @Volatile var lastError: String? = null
+            private set
+        // One queue orders startup, frame callbacks and teardown across Service instances.
+        private val captureWorker by lazy { HandlerThread("OneverseCapture").apply { start() } }
+        private val sharedCaptureHandler by lazy { Handler(captureWorker.looper) }
         private const val CHANNEL_ID = "ndi_contribute"
         private const val NOTIFICATION_ID = 73
     }
@@ -89,33 +94,33 @@ class ContributeService : Service() {
         }
         if (!startClaimed.compareAndSet(false, true)) return START_NOT_STICKY
         val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_SCREEN
+        if (mode !in setOf(MODE_SCREEN, MODE_CAMERA)) { stopSelf(); return START_NOT_STICKY }
+        lastError = null
         activeMode = mode
         val sourceName = intent.getStringExtra(EXTRA_NAME)?.trim().orEmpty().ifBlank { "Oneverse Screen" }
         val includeAudio = intent.getBooleanExtra(EXTRA_AUDIO, false)
         val requestedCameraId = intent.getStringExtra(EXTRA_CAMERA_ID)
-        startCaptureForeground(mode, includeAudio)
+        if (runCatching { startCaptureForeground(mode, includeAudio) }.isFailure) {
+            failCapture("Android did not allow this sharing session")
+            return START_NOT_STICKY
+        }
         isRunning = true
-        captureThread = HandlerThread("OneverseCapture").apply { start() }
-        captureHandler = Handler(captureThread!!.looper)
-        Thread {
-            val started = synchronized(senderStartupLock) {
-                if (stopping.get()) return@synchronized false
-                val initialized = runCatching { NdiNative.initialize() && NdiNative.startSender(sourceName) }.getOrDefault(false)
-                if (!initialized || stopping.get()) {
-                    runCatching { NdiNative.stopSender() }
-                    false
-                } else {
-                    runCatching {
-                        when (mode) {
-                            MODE_CAMERA -> startCamera(includeAudio, requestedCameraId)
-                            else -> startScreenCapture(intent, includeAudio)
-                        }
-                    }.onFailure { stopSelf() }
-                    true
-                }
+        captureHandler = sharedCaptureHandler
+        captureHandler!!.post {
+            if (stopping.get()) return@post
+            runCatching {
+                val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
+                multicastLock = wifi?.createMulticastLock("OneverseContribution")?.apply { setReferenceCounted(false); acquire() }
             }
-            if (!started) stopSelf()
-        }.start()
+            runCatching {
+                check(NdiNative.initialize() && NdiNative.startSender(sourceName)) { "NDI sender could not start" }
+                senderStarted = true
+                when (mode) {
+                    MODE_CAMERA -> startCamera(includeAudio, requestedCameraId)
+                    else -> startScreenCapture(intent, includeAudio)
+                }
+            }.onFailure { failCapture("Could not start sharing", it) }
+        }
         return START_NOT_STICKY
     }
 
@@ -187,7 +192,7 @@ class ContributeService : Service() {
         imageReader = reader
         reader.setOnImageAvailableListener({ imageReader ->
             val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
-            image.use { frame ->
+            runCatching { image.use { frame ->
                 val now = System.nanoTime()
                 if (now - lastVideoFrameNanos < 33_000_000L) return@use
                 lastVideoFrameNanos = now
@@ -196,7 +201,7 @@ class ContributeService : Service() {
                 synchronized(senderLock) {
                     if (!stopping.get()) NdiNative.sendVideo(pixels, frame.width, frame.height, plane.rowStride, plane.pixelStride)
                 }
-            }
+            } }.onFailure { if (!stopping.get()) failCapture("Video capture failed", it) }
         }, captureHandler)
         virtualDisplay = activeProjection.createVirtualDisplay(
             "Oneverse Screen NDI", width, height, density,
@@ -227,7 +232,7 @@ class ContributeService : Service() {
         imageReader = reader
         reader.setOnImageAvailableListener({ imageReader ->
             val image = runCatching { imageReader.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
-            image.use { frame ->
+            runCatching { image.use { frame ->
                 val now = System.nanoTime()
                 if (now - lastVideoFrameNanos < 33_000_000L) return@use
                 lastVideoFrameNanos = now
@@ -242,23 +247,24 @@ class ContributeService : Service() {
                                 y, planes[0].rowStride, planes[0].pixelStride,
                                 u, planes[1].rowStride, planes[1].pixelStride,
                                 v, planes[2].rowStride, planes[2].pixelStride,
-                                frame.width, frame.height
+                                frame.width, frame.height, cameraRotation(characteristics)
                             )
                         }
                     }
                     val previewTime = System.nanoTime()
                     if (cameraPreviewRequested && previewTime - lastPreviewFrameNanos >= 200_000_000L) {
                         lastPreviewFrameNanos = previewTime
-                        latestCameraPreview = createCameraPreview(frame)
+                        latestCameraPreview = CameraFrames.preview(frame, cameraRotation(characteristics))
                     }
                 }
-            }
+            } }.onFailure { if (!stopping.get()) failCapture("Video capture failed", it) }
         }, captureHandler)
         if (includeAudio) startAudioCapture(playback = false)
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) {
                 if (stopping.get()) { device.close(); return }
                 camera = device
+                runCatching {
                 val surface = reader.surface
                 device.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
@@ -273,12 +279,14 @@ class ContributeService : Service() {
                             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                         }.build()
                         runCatching { session.setRepeatingRequest(request, null, captureHandler) }
+                            .onFailure { failCapture("Camera could not start streaming", it) }
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         session.close()
                         stopSelf()
                     }
                 }, captureHandler)
+                }.onFailure { failCapture("Camera session could not start", it) }
             }
             override fun onDisconnected(device: CameraDevice) { device.close(); stopSelf() }
             override fun onError(device: CameraDevice, error: Int) { device.close(); stopSelf() }
@@ -292,35 +300,9 @@ class ContributeService : Service() {
             ?: sizes.minByOrNull { it.width.toLong() * it.height }
     }
 
-    private fun createCameraPreview(image: Image): Bitmap {
-        val width = image.width
-        val height = image.height
-        val targetWidth = minOf(width, 640)
-        val targetHeight = (height.toLong() * targetWidth / width).toInt().coerceAtLeast(1)
-        val pixels = IntArray(targetWidth * targetHeight)
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-        val yBuffer = yPlane.buffer.duplicate()
-        val uBuffer = uPlane.buffer.duplicate()
-        val vBuffer = vPlane.buffer.duplicate()
-        for (py in 0 until targetHeight) {
-            val sy = py * height / targetHeight
-            for (px in 0 until targetWidth) {
-                val sx = px * width / targetWidth
-                val y = (yBuffer.get(sy * yPlane.rowStride + sx * yPlane.pixelStride).toInt() and 0xFF) - 16
-                val uvx = sx / 2
-                val uvy = sy / 2
-                val u = (uBuffer.get(uvy * uPlane.rowStride + uvx * uPlane.pixelStride).toInt() and 0xFF) - 128
-                val v = (vBuffer.get(uvy * vPlane.rowStride + uvx * vPlane.pixelStride).toInt() and 0xFF) - 128
-                val luminance = maxOf(0, y) * 1192
-                val red = (luminance + 1634 * v).coerceIn(0, 262143) shr 10
-                val green = (luminance - 833 * v - 400 * u).coerceIn(0, 262143) shr 10
-                val blue = (luminance + 2066 * u).coerceIn(0, 262143) shr 10
-                pixels[py * targetWidth + px] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
-            }
-        }
-        return Bitmap.createBitmap(pixels, targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+    private fun cameraRotation(characteristics: android.hardware.camera2.CameraCharacteristics): Int {
+        val display = (getSystemService(DISPLAY_SERVICE) as DisplayManager).getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        return CameraFrames.rotation(characteristics, display?.rotation ?: Surface.ROTATION_0)
     }
 
     private fun startAudioCapture(playback: Boolean) {
@@ -357,16 +339,13 @@ class ContributeService : Service() {
             val samples = ShortArray(480 * channels)
             val bytes = ByteBuffer.allocateDirect(480 * channels * 4)
             while (!stopping.get() && audioRecord === record) {
-                val count = record.read(samples, 0, samples.size, AudioRecord.READ_BLOCKING)
-                if (count <= 0) continue
-                val perChannel = count / channels
-                val floats = bytes.asFloatBuffer()
-                floats.clear()
-                for (i in 0 until perChannel) floats.put(samples[i * channels] / 32768f)
-                if (channels > 1) {
-                    for (i in 0 until perChannel) floats.put(samples[i * channels + 1] / 32768f)
+                val count = runCatching { record.read(samples, 0, samples.size, AudioRecord.READ_BLOCKING) }.getOrDefault(AudioRecord.ERROR_INVALID_OPERATION)
+                if (count < 0) {
+                    if (!stopping.get()) failCapture("Audio capture stopped unexpectedly")
+                    break
                 }
-                bytes.position(0)
+                if (count == 0) continue
+                val perChannel = AudioSamples.writePlanar(samples, count, channels, bytes)
                 synchronized(senderLock) {
                     if (!stopping.get()) NdiNative.sendAudio(bytes, rate, channels, perChannel)
                 }
@@ -374,25 +353,39 @@ class ContributeService : Service() {
         }.apply { name = "OneverseAudioCapture"; start() }
     }
 
+    private fun failCapture(message: String, error: Throwable? = null) {
+        lastError = if (error?.message.isNullOrBlank()) message else "$message: ${error?.message}"
+        android.util.Log.e("OneverseCapture", message, error)
+        stopSelf()
+    }
+
     override fun onDestroy() {
         stopping.set(true)
-        synchronized(senderStartupLock) {
-            cameraPreviewRequested = false
-            latestCameraPreview = null
-            imageReader?.setOnImageAvailableListener(null, null)
+        cameraPreviewRequested = false
+        latestCameraPreview = null
+        isRunning = false
+        activeMode = null
+        // The callback queue must finish reading any acquired Image before its reader closes.
+        // Posting also keeps native sender teardown off the Android main thread.
+        captureHandler?.post {
+            runCatching { imageReader?.setOnImageAvailableListener(null, null) }
             runCatching { cameraSession?.stopRepeating() }
             runCatching { cameraSession?.close() }
             runCatching { camera?.close() }
             runCatching { virtualDisplay?.release() }
             runCatching { projection?.stop() }
             runCatching { imageReader?.close() }
-            audioRecord?.let { runCatching { it.stop() }; runCatching { it.release() } }
-            captureThread?.quitSafely()
-            synchronized(senderLock) { runCatching { NdiNative.stopSender() } }
+            val record = audioRecord
+            audioRecord = null
+            runCatching { record?.stop() }
+            runCatching { audioThread?.join(2000) }
+            runCatching { record?.release() }
+            synchronized(senderLock) { if (senderStarted) runCatching { NdiNative.stopSender() } }
+            multicastLock?.let { lock -> if (lock.isHeld) runCatching { lock.release() } }
+            multicastLock = null
         }
-        isRunning = false
-        activeMode = null
+        @Suppress("DEPRECATION")
+        stopForeground(true)
         super.onDestroy()
     }
 }
-

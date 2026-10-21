@@ -12,7 +12,7 @@ The app is intended for always-on screens, venue displays, studios, and other se
 
 - **Web View:** Show a web page full screen. The default page is [screen.oneverse.top](https://screen.oneverse.top); users can save a custom HTTP or HTTPS URL in Settings, choose it as the startup destination, and adjust page scale for a TV display.
 - **NDI monitor:** Discover NDI sources on the local network, select one, and display its video full screen.
-- **Hybrid View:** Display an NDI source as the background with the configured web page layered over it; adjust the web overlay opacity in Settings. The configured page can use a limited JavaScript bridge to position/size the NDI viewport or request a switch to a currently discovered source by its exact identity or a user-assigned label.
+- **Hybrid View:** Display an NDI source as the background with the configured web page layered over it; adjust the web overlay opacity in Settings. The configured page can use an origin-restricted, asynchronous JavaScript bridge to position/size the NDI viewport or request a switch to a currently discovered source by its exact identity or a user-assigned label.
 - **Startup choice:** Open the dashboard, Web View, NDI source selection, or Hybrid View when the app launches.
 - **Contribute:** Make the Android device a discoverable NDI source by sharing its screen or camera, with a user-editable source name.
 - **Immersive display:** Hide Android system bars and keep the device awake while the app is running.
@@ -26,12 +26,12 @@ The app is intended for always-on screens, venue displays, studios, and other se
 - Show a small red indicator if the stream disconnects while retaining the last displayed frame; reconnect automatically when the source returns.
 - Show optional source-name and video-detail overlays. These are off by default.
 - Set an optional NDI preview refresh limit, or use the device's display refresh rate.
-- Let the configured Hybrid View page read discovered source names/addresses, set or reset the NDI viewport using screen percentages, and request a source switch.
+- Assign source labels in Settings. Let the top-level configured Hybrid View page read discovered source names/addresses and labels, set or reset the NDI viewport using screen percentages, and request a source switch. Page API results are asynchronous; see the Hybrid View guide below.
 
 ### Contribute mode
 
 - **Screen sharing:** Send the device display as an NDI source so a receiver can see other apps and on-screen interactions. Android asks the user to approve every screen-sharing session and shows its screen-sharing indicator.
-- **Camera sharing:** Send a camera feed as an NDI source. The app requests camera permission when this feature is first used and selects a camera available on the device.
+- **Camera sharing:** Choose an available camera and preview it before sending. The preview and transmitted image follow the sensor orientation and display rotation while preserving their aspect ratio. The app requests camera permission when needed.
 - **Optional audio:** Screen sharing can include app playback audio on Android 10 and newer when the playing app allows capture. Camera sharing can include microphone audio. Audio is off by default.
 - **Persistent controls:** An Android foreground-service notification indicates that contribution is active and provides a Stop action, including when the user switches to another app during screen sharing.
 - **Capture size and rate:** Video is currently sent at up to 1280 pixels on its longest dimension and capped at 30 frames per second to control device load and network use.
@@ -102,3 +102,7 @@ Do not use “NDI” as part of the product name without first consulting NDI. O
 Issues and pull requests are welcome. Please do not commit SDK binaries, local SDK paths, signing keys, generated build directories, or credentials. When changing NDI integration or packaging, preserve the SDK's licensing, trademark, and third-party attribution requirements.
 
 
+
+## Checks
+
+From `android/`, run `gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` (use `./gradlew` on macOS/Linux). With Node.js installed, run `node --test android/app/src/test/js/hybrid-web-controls.test.cjs` from the repository root to check the page bridge wrapper. Native rotation assertions live in `android/app/src/test/cpp/frame_layout_test.cpp` and can be compiled with the NDK compiler using `-std=c++17 -fsyntax-only` for each configured ABI. Physical-device checks are still needed for NDI interoperability, hardware cameras, capture permissions, and Android TV remote navigation.
