@@ -8,7 +8,7 @@
 #include <Processing.NDI.Lib.h>
 #include "frame_layout.h"
 
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "OpenNdiMonitor", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "OneverseScreen", __VA_ARGS__)
 
 namespace {
 std::mutex ndi_mutex;
@@ -35,7 +35,7 @@ void destroySenderLocked() {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_initialize(JNIEnv*, jobject) {
+Java_org_oneverse_screen_NdiNative_initialize(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (initialized) return JNI_TRUE;
     if (!NDIlib_initialize()) {
@@ -54,7 +54,7 @@ Java_org_openndimonitor_app_NdiNative_initialize(JNIEnv*, jobject) {
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_org_openndimonitor_app_NdiNative_findSources(JNIEnv* env, jobject, jint timeout_ms) {
+Java_org_oneverse_screen_NdiNative_findSources(JNIEnv* env, jobject, jint timeout_ms) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     jclass stringClass = env->FindClass("java/lang/String");
     jclass stringArrayClass = env->FindClass("[Ljava/lang/String;");
@@ -79,7 +79,7 @@ Java_org_openndimonitor_app_NdiNative_findSources(JNIEnv* env, jobject, jint tim
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_connect(JNIEnv* env, jobject, jstring name, jstring address) {
+Java_org_oneverse_screen_NdiNative_connect(JNIEnv* env, jobject, jstring name, jstring address) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (!initialized || !name || !address) return JNI_FALSE;
     const char* name_chars = env->GetStringUTFChars(name, nullptr);
@@ -112,13 +112,13 @@ Java_org_openndimonitor_app_NdiNative_connect(JNIEnv* env, jobject, jstring name
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_org_openndimonitor_app_NdiNative_connectionCount(JNIEnv*, jobject) {
+Java_org_oneverse_screen_NdiNative_connectionCount(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     return receiver ? NDIlib_recv_get_no_connections(receiver) : -1;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_startSender(JNIEnv* env, jobject, jstring name) {
+Java_org_oneverse_screen_NdiNative_startSender(JNIEnv* env, jobject, jstring name) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (!initialized || !name) return JNI_FALSE;
     const char* name_chars = env->GetStringUTFChars(name, nullptr);
@@ -135,7 +135,7 @@ Java_org_openndimonitor_app_NdiNative_startSender(JNIEnv* env, jobject, jstring 
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_sendVideo(JNIEnv* env, jobject, jobject pixels,
+Java_org_oneverse_screen_NdiNative_sendVideo(JNIEnv* env, jobject, jobject pixels,
         jint width, jint height, jint row_stride, jint pixel_stride) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (!sender || !pixels || width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
@@ -175,7 +175,7 @@ Java_org_openndimonitor_app_NdiNative_sendVideo(JNIEnv* env, jobject, jobject pi
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_sendYuvVideo(JNIEnv* env, jobject, jobject y_plane,
+Java_org_oneverse_screen_NdiNative_sendYuvVideo(JNIEnv* env, jobject, jobject y_plane,
         jint y_row_stride, jint y_pixel_stride, jobject u_plane, jint u_row_stride,
         jint u_pixel_stride, jobject v_plane, jint v_row_stride, jint v_pixel_stride,
         jint width, jint height, jint rotation) {
@@ -229,7 +229,7 @@ Java_org_openndimonitor_app_NdiNative_sendYuvVideo(JNIEnv* env, jobject, jobject
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_org_openndimonitor_app_NdiNative_sendAudio(JNIEnv* env, jobject, jobject samples,
+Java_org_oneverse_screen_NdiNative_sendAudio(JNIEnv* env, jobject, jobject samples,
         jint sample_rate, jint channels, jint sample_count) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (!sender || !samples || sample_rate <= 0 || channels <= 0 || sample_count <= 0) return JNI_FALSE;
@@ -248,13 +248,13 @@ Java_org_openndimonitor_app_NdiNative_sendAudio(JNIEnv* env, jobject, jobject sa
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_org_openndimonitor_app_NdiNative_stopSender(JNIEnv*, jobject) {
+Java_org_oneverse_screen_NdiNative_stopSender(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     destroySenderLocked();
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
-Java_org_openndimonitor_app_NdiNative_capture(JNIEnv* env, jobject, jobject target, jint timeout_ms) {
+Java_org_oneverse_screen_NdiNative_capture(JNIEnv* env, jobject, jobject target, jint timeout_ms) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     if (!receiver || !target) return nullptr;
     auto* destination = static_cast<uint8_t*>(env->GetDirectBufferAddress(target));
@@ -325,13 +325,13 @@ Java_org_openndimonitor_app_NdiNative_capture(JNIEnv* env, jobject, jobject targ
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_org_openndimonitor_app_NdiNative_disconnect(JNIEnv*, jobject) {
+Java_org_oneverse_screen_NdiNative_disconnect(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     destroyReceiverLocked();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_org_openndimonitor_app_NdiNative_shutdown(JNIEnv*, jobject) {
+Java_org_oneverse_screen_NdiNative_shutdown(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> guard(ndi_mutex);
     destroySenderLocked();
     destroyReceiverLocked();

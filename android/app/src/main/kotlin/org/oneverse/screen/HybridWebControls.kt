@@ -1,4 +1,4 @@
-package org.openndimonitor.app
+package org.oneverse.screen
 
 import android.webkit.WebView
 import androidx.webkit.WebMessageCompat
@@ -66,7 +66,6 @@ internal object HybridWebControls {
             api[method] = function () { return call(method, Array.prototype.slice.call(arguments)); };
           });
           window.OneverseHybrid = Object.freeze(api);
-          window.SongverseHybrid = window.OneverseHybrid;
           window.dispatchEvent(new Event('oneversehybridready'));
         })();
     """.trimIndent()

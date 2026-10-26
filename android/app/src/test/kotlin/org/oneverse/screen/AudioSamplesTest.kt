@@ -1,4 +1,4 @@
-package org.openndimonitor.app
+package org.oneverse.screen
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder

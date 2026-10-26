@@ -1,4 +1,4 @@
-package org.openndimonitor.app
+package org.oneverse.screen
 
 import org.junit.Assert.*
 import org.junit.Test

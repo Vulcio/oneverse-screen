@@ -1,4 +1,4 @@
-package org.openndimonitor.app
+package org.oneverse.screen
 
 import android.app.Activity
 import android.content.Intent
@@ -63,7 +63,6 @@ private const val BLUE = 0xFF56A9F5.toInt()
 private const val GREEN = 0xFF56D6A6.toInt()
 private const val DISCONNECTED_RED = 0xFFE55252.toInt()
 private const val DEFAULT_WEB_URL = "https://screen.oneverse.top"
-private const val LEGACY_DEFAULT_WEB_URL = "https://songverse.one/screen"
 private const val MAX_NDI_FRAME_BYTES = 64 * 1024 * 1024
 private const val MAX_NDI_FRAME_DIMENSION = 8192
 
@@ -154,6 +153,7 @@ class MainActivity : Activity() {
         if (keepAwake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.keepScreenOn = keepAwake
+        root?.keepScreenOn = keepAwake
     }
 
     private fun enterImmersiveMode() {
@@ -179,7 +179,15 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
+        if (hasFocus) {
+            setKeepScreenAwake(true)
+            enterImmersiveMode()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        setKeepScreenAwake(true)
     }
 
     override fun onStart() {
@@ -231,7 +239,7 @@ class MainActivity : Activity() {
     private fun keepMulticastDiscoveryAwake() {
         runCatching {
             val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-            multicastLock = wifi.createMulticastLock("OpenNdiMonitorDiscovery").apply {
+            multicastLock = wifi.createMulticastLock("OneverseScreenDiscovery").apply {
                 setReferenceCounted(false)
                 acquire()
             }
@@ -901,19 +909,19 @@ class MainActivity : Activity() {
     private fun configuredUrl(): String {
         val prefs = getPreferences(MODE_PRIVATE)
         val custom = prefs.getString("custom_url", null)
-            ?: prefs.getString("startup_url", null)?.takeUnless { it == DEFAULT_WEB_URL || it == LEGACY_DEFAULT_WEB_URL }
+            ?: prefs.getString("startup_url", null)?.takeUnless { it == DEFAULT_WEB_URL }
         return custom?.let(::normalizeUrl) ?: DEFAULT_WEB_URL
     }
 
     private fun configuredContributeSourceName(): String = getPreferences(MODE_PRIVATE)
         .getString("contribute_source_name", null)
-        ?.takeUnless { it.isBlank() || it == "Songverse Screen" }
+        ?.takeUnless { it.isBlank() }
         ?: "Oneverse Screen"
 
     private fun customUrlForEditing(): String {
         val prefs = getPreferences(MODE_PRIVATE)
         return prefs.getString("custom_url", null)
-            ?: prefs.getString("startup_url", null)?.takeUnless { it == DEFAULT_WEB_URL || it == LEGACY_DEFAULT_WEB_URL }
+            ?: prefs.getString("startup_url", null)?.takeUnless { it == DEFAULT_WEB_URL }
             ?: ""
     }
 
@@ -1698,8 +1706,14 @@ class MainActivity : Activity() {
             ndiContainer = null
             ndiSourceTitle = null
         }
-        root = FrameLayout(this).apply { setBackgroundColor(BG); addView(view, FrameLayout.LayoutParams(-1, -1)) }
+        root = FrameLayout(this).apply {
+            // Keep every destination awake, including static pages and settings.
+            keepScreenOn = true
+            setBackgroundColor(BG)
+            addView(view, FrameLayout.LayoutParams(-1, -1))
+        }
         setContentView(root)
+        setKeepScreenAwake(true)
         previousRoot?.let { releaseWebViews(it) }
     }
 
@@ -1844,7 +1858,7 @@ private data class CameraChoice(val id: String, val label: String, val facing: I
 internal object NdiNative {
     init {
         System.loadLibrary("ndi")
-        System.loadLibrary("openndi")
+        System.loadLibrary("oneverse_screen")
     }
     external fun initialize(): Boolean
     external fun findSources(timeoutMs: Int): Array<Array<String>>

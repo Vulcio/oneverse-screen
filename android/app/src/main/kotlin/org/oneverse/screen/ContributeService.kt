@@ -1,4 +1,4 @@
-package org.openndimonitor.app
+package org.oneverse.screen
 
 import android.app.Activity
 import android.app.Notification
@@ -55,8 +55,8 @@ class ContributeService : Service() {
     private var lastPreviewFrameNanos = 0L
 
     companion object {
-        const val ACTION_START = "org.openndimonitor.app.action.START_CONTRIBUTE"
-        const val ACTION_STOP = "org.openndimonitor.app.action.STOP_CONTRIBUTE"
+        const val ACTION_START = "org.oneverse.screen.action.START_CONTRIBUTE"
+        const val ACTION_STOP = "org.oneverse.screen.action.STOP_CONTRIBUTE"
         const val EXTRA_MODE = "mode"
         const val EXTRA_NAME = "source_name"
         const val EXTRA_AUDIO = "include_audio"

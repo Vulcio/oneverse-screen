@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(openndi LANGUAGES CXX)
+project(oneverse_screen LANGUAGES CXX)
 
 if(NOT DEFINED NDI_ANDROID_SDK_ROOT)
     message(FATAL_ERROR "Set ndiAndroidSdk in local.properties or NDI_ANDROID_SDK to the installed Android SDK folder")
@@ -14,9 +14,9 @@ endif()
 add_library(ndi SHARED IMPORTED)
 set_target_properties(ndi PROPERTIES IMPORTED_LOCATION "${NDI_LIBRARY}")
 
-add_library(openndi SHARED ndi_bridge.cpp)
-target_include_directories(openndi PRIVATE "${NDI_INCLUDE_DIR}")
-target_compile_features(openndi PRIVATE cxx_std_17)
+add_library(oneverse_screen SHARED ndi_bridge.cpp)
+target_include_directories(oneverse_screen PRIVATE "${NDI_INCLUDE_DIR}")
+target_compile_features(oneverse_screen PRIVATE cxx_std_17)
 find_library(android_log log)
-target_link_libraries(openndi PRIVATE ndi ${android_log})
+target_link_libraries(oneverse_screen PRIVATE ndi ${android_log})
 

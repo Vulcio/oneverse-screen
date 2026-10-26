@@ -5,14 +5,14 @@
 	<key>CFBundleDevelopmentRegion</key><string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key><string>Oneverse Screen</string>
 	<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleIdentifier</key><string>org.oneverse.screen</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-	<key>CFBundleName</key><string>openndi_monitor</string>
+	<key>CFBundleName</key><string>Oneverse Screen</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleVersion</key><string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key><true/>
-	<key>NSLocalNetworkUsageDescription</key><string>OpenNDI Monitor uses your local network to discover and display video sources.</string>
+	<key>NSLocalNetworkUsageDescription</key><string>Oneverse Screen uses your local network to discover and display video sources.</string>
 	<key>NSBonjourServices</key><array><string>_ndi._tcp</string></array>
 	<key>UILaunchScreen</key><dict/>
 	<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>

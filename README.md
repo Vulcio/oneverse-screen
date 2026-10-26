@@ -16,6 +16,7 @@ The app is intended for always-on screens, venue displays, studios, and other se
 - **Startup choice:** Open the dashboard, Web View, NDI source selection, or Hybrid View when the app launches.
 - **Contribute:** Make the Android device a discoverable NDI source by sharing its screen or camera, with a user-editable source name.
 - **Immersive display:** Hide Android system bars and keep the device awake while the app is running.
+- **Stay awake in every view:** Prevent normal screen timeout and Android TV/Google TV screensavers while the app is visible, including Dashboard, Settings, Web, NDI, Hybrid, and Contribute. Normal timeout resumes when the app is in the background. A TV's separate Energy Saver or automatic power-off setting can override this; adjust it in the device settings for unattended use.
 
 ### NDI source handling
 
@@ -51,7 +52,7 @@ The app is intended for always-on screens, venue displays, studios, and other se
 - Camera contribution requires a camera on the device. Android TV devices often do not have one.
 - Source discovery provides the advertised source name and address. Resolution, frame rate, and codec are learned only after attempting to receive video, so the app cannot reliably identify every incompatible stream before connection.
 - Latency depends on the sending device, capture and encoding settings, network, Android device, and display pipeline. The app's preview refresh setting controls its polling limit; it does not change the sender's capture or encoding rate.
-- The Hybrid View JavaScript bridge (`OneverseHybrid`, with the previous `SongverseHybrid` name retained for compatibility) is available only to the configured page in Hybrid View. It exposes viewport controls, discovered source labels, and source selection; see [`docs/hybrid-web-controls.md`](docs/hybrid-web-controls.md) for setup, API details, and the trust boundary.
+- The Hybrid View JavaScript bridge (`OneverseHybrid`) is available only to the configured page in Hybrid View. It exposes viewport controls, discovered source labels, and source selection; see [`docs/hybrid-web-controls.md`](docs/hybrid-web-controls.md) for setup, API details, and the trust boundary.
 - This is an independent community project and is not endorsed by Vizrt NDI AB.
 
 ## Building the Android app
@@ -64,6 +65,12 @@ The app is intended for always-on screens, venue displays, studios, and other se
 - The Android NDI SDK, installed separately
 
 The project uses Android Gradle Plugin 9.4.1 and the Gradle 9.8 wrapper. The app's minimum Android API level is 23. The configured native ABIs are `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+
+### Application identity
+
+The Android application ID and Kotlin namespace are `org.oneverse.screen`. Kotlin sources and JNI entry points use this package, and the native bridge is built as `liboneverse_screen.so`. The iOS scaffold uses the same bundle identifier.
+
+This package identity installs separately from earlier builds with a different application ID. Settings and permissions are not transferred automatically; configure the new installation as needed. Hybrid pages must use `window.OneverseHybrid`; earlier bridge aliases are no longer available.
 
 ### Steps
 

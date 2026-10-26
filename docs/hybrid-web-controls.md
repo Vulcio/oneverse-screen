@@ -1,6 +1,6 @@
 # Hybrid View web controls
 
-Hybrid View places the configured web page above the selected NDI source. Its WebView exposes a deliberately small JavaScript interface named `OneverseHybrid`; the old `SongverseHybrid` name remains available as a compatibility alias. All methods now return JavaScript Promises; use `await` when reading their results. The ordinary Web View does not expose either interface.
+Hybrid View places the configured web page above the selected NDI source. Its WebView exposes a deliberately small JavaScript interface named `OneverseHybrid`. All methods return JavaScript Promises; use `await` when reading their results. The ordinary Web View does not expose this interface.
 
 ## Label NDI sources
 
@@ -31,7 +31,7 @@ else window.addEventListener("oneversehybridready", () => {
 
 Each source's `name` and `address` should be passed back unchanged to `selectNdiSource`. The `address` may be an empty string if discovery did not provide one. `selectNdiSourceByLabel` ignores letter case but otherwise matches the saved label exactly after trimming whitespace.
 
-Pages that already use `SongverseHybrid` can continue using that name, but must also await method results. New pages should use `OneverseHybrid`. Requests reject on protocol errors or after a five-second reply timeout. These controls require a WebView provider with `WEB_MESSAGE_LISTENER` support; on older providers, viewing still works but the control API and ready event are unavailable. Update Android System WebView to enable them.
+Pages must use `window.OneverseHybrid` and await method results. Earlier API aliases are no longer exposed. Requests reject on protocol errors or after a five-second reply timeout. These controls require a WebView provider with `WEB_MESSAGE_LISTENER` support; on older providers, viewing still works but the control API and ready event are unavailable. Update Android System WebView to enable them.
 
 `setNdiViewport`, `resetNdiViewport`, and source selection resolve to `true` when a request is valid and accepted in Hybrid View. Changes are applied asynchronously on the Android UI thread. The NDI image keeps its aspect-fit behavior inside the requested rectangle; viewport calls move and size its display area without changing the incoming NDI stream or cropping decoded frames.
 

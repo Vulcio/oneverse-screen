@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const kotlin = fs.readFileSync(path.join(__dirname, '../../main/kotlin/org/openndimonitor/app/HybridWebControls.kt'), 'utf8');
+const kotlin = fs.readFileSync(path.join(__dirname, '../../main/kotlin/org/oneverse/screen/HybridWebControls.kt'), 'utf8');
 const script = kotlin.match(/private val script = """([\s\S]*?)"""\.trimIndent\(\)/)[1];
 
 function page({ iframe = false, supported = true } = {}) {
@@ -24,9 +24,8 @@ test('subframes and unsupported WebViews receive no public control API', () => {
   assert.equal(page({ supported: false }).window.OneverseHybrid, undefined);
 });
 
-test('requests correlate replies and preserve the compatibility alias', async () => {
+test('requests correlate replies through the public API', async () => {
   const p = page();
-  assert.equal(p.window.SongverseHybrid, p.window.OneverseHybrid);
   const result = p.window.OneverseHybrid.selectNdiSourceByLabel('Main camera');
   assert.equal(p.sent[0].method, 'selectNdiSourceByLabel');
   assert.deepEqual(p.sent[0].args, ['Main camera']);
